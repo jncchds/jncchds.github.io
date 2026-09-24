@@ -1,0 +1,4 @@
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {"namespace": "android_app", "package_name": "ua.pp.chds.apuzzle", "sha256_cert_fingerprints": ["26:C8:11:2B:63:EF:BC:A8:0B:CC:0A:43:96:B5:39:02:27:F6:DC:0F:03:9D:F5:87:24:E4:5E:B5:BA:30:FA:1B"]}
+}]
