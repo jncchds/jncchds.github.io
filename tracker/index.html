@@ -45,8 +45,9 @@
 
   /* app */
   header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); }
-  .bar { max-width: 900px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 8px; align-items: center; }
-  .bar .field { width: auto; flex: 1 1 auto; min-width: 0; text-align: center; }
+  .bar { max-width: 900px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 6px; align-items: center; }
+  .bar .field { width: auto; flex: 1 1 auto; min-width: 0; text-align: center; padding: 8px 4px; }
+  .bar #today { padding: 10px 10px; }
   .icon { width: 40px; height: 40px; padding: 0; display: grid; place-items: center; flex: none; }
   .btn:disabled { opacity: .35; cursor: default; }
   #status { font-size: 13px; color: var(--muted); white-space: nowrap; margin-left: auto; padding-left: 12px; }
@@ -77,6 +78,29 @@
   dialog ol { margin: 0 0 16px; padding-left: 20px; display: grid; gap: 8px; }
   dialog p { margin: 0 0 16px; color: var(--muted); }
   dialog .btn { width: 100%; }
+  dialog.cal { width: min(420px, calc(100vw - 32px)); max-width: none; padding: 16px; }
+  .cal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  dialog .cal-head .btn { width: 40px; flex: none; }
+  .cal-head h2 { flex: 1; margin: 0; text-align: center; font-size: 17px; text-transform: capitalize; }
+  .cal-tabs { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-bottom: 12px; }
+  .cal-tabs button { border: 1px solid var(--line); background: none; border-radius: 999px; padding: 4px 12px; font-size: 13px; color: var(--muted); }
+  .cal-tabs button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px 2px; }
+  .cal-grid .wd { text-align: center; font-size: 12px; color: var(--muted); padding-bottom: 4px; text-transform: capitalize; }
+  .cal-day { position: relative; aspect-ratio: 1; border: 0; background: none; padding: 0; display: grid; place-items: center; border-radius: 50%; }
+  .cal-day svg { position: absolute; inset: 6%; width: 88%; height: 88%; transform: rotate(-90deg); }
+  .cal-day .track { stroke: var(--line); }
+  .cal-day .arc { stroke: var(--accent); transition: stroke-dasharray .2s; }
+  .cal-day.full .arc { stroke: var(--ok); }
+  .cal-day.full { background: var(--done-bg); }
+  .cal-day span { position: relative; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .cal-day.today span { font-weight: 700; color: var(--accent); }
+  .cal-day.selected { box-shadow: inset 0 0 0 2px var(--accent); }
+  .cal-day:disabled { opacity: .3; cursor: default; }
+  .cal-day.future { opacity: .55; }
+  .cal-day.unknown .track { stroke-dasharray: 2 3; }
+  .cal-day .unsent-dot { position: absolute; top: 2px; right: 4px; margin: 0; }
+  .cal-summary { text-align: center; margin: 12px 0; font-size: 14px; }
   .glyph { display: inline-block; vertical-align: -3px; width: 18px; height: 18px; color: var(--accent); }
 
   table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
@@ -125,6 +149,18 @@
   <form method="dialog"><button class="btn">Close</button></form>
 </dialog>
 
+<dialog id="calDialog" class="cal">
+  <div class="cal-head">
+    <button class="btn icon" id="calPrev" aria-label="Previous month">‹</button>
+    <h2 id="calTitle"></h2>
+    <button class="btn icon" id="calNext" aria-label="Next month">›</button>
+  </div>
+  <div id="calTabs" class="cal-tabs"></div>
+  <div id="calGrid" class="cal-grid"></div>
+  <p id="calSummary" class="cal-summary"></p>
+  <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+
 <dialog id="syncDialog">
   <h2>Sync</h2>
   <div id="syncBody"></div>
@@ -138,6 +174,9 @@
       <input id="date" class="field" type="date" required>
       <button class="btn icon" id="next" aria-label="Next day">›</button>
       <button class="btn" id="today">Today</button>
+      <button class="btn icon" id="calendar" aria-label="Month calendar" title="Month calendar">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+      </button>
     </div>
     <nav><div id="tabs"></div><span id="status"></span></nav>
   </header>
@@ -487,9 +526,8 @@ async function sync(range) {
         });
         if (Object.keys(day).length) cache.days[d] = day; else delete cache.days[d];
       }
-      if (range) cache.known[res.from] = true;
-      else cache.synced = { from: res.from, to: res.to };
-      prune();
+      if (range) { for (let d = res.from; d <= res.to; d = shiftISO(d, 1)) cache.known[d] = true; }
+      else { cache.synced = { from: res.from, to: res.to }; prune(); }
       saveCache();
       net.ok = Date.now(); net.error = '';
 
@@ -508,6 +546,7 @@ async function sync(range) {
   await net.busy;
   net.busy = null;
   updateStatus();
+  if ($('calDialog').open) renderCalendar();
   if (net.again) { net.again = false; sync(); }
   // A day outside the month window (e.g. picked while another sync was running).
   else if (!range && cache.config && !net.error && !dayKnown(state.date)) sync({ from: state.date, to: state.date });
@@ -553,6 +592,123 @@ function showSyncDialog() {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+// ---------- month calendar ----------
+const cal = { month: '', tab: store.get('calTab') || '', tried: '' }; // month = 'yyyy-MM', tab '' = all tabs
+
+/**
+ * Progress of one day, 0..1, or null if the day has nothing to track.
+ * A row counts as done when all its checkboxes are ticked; rows without checkboxes count when filled in.
+ */
+function dayProgress(date) {
+  if (!cache.config) return null;
+  let done = 0, total = 0;
+  cache.config.tabs.filter(t => !cal.tab || t.name === cal.tab).forEach(tab => {
+    const values = valuesFor(date, tab);
+    const bools = tab.columns.map((c, j) => c.type === 'bool' ? j : -1).filter(j => j >= 0);
+    values.forEach(row => {
+      total++;
+      if (bools.length ? bools.every(j => row[j] === true) : row.some(v => v !== '' && v !== false)) done++;
+    });
+  });
+  return total ? done / total : null;
+}
+
+function monthDays(month) {
+  const [y, m] = month.split('-').map(Number);
+  const n = new Date(y, m, 0).getDate();
+  return Array.from({ length: n }, (_, i) => month + '-' + pad(i + 1));
+}
+
+function openCalendar() {
+  cal.month = state.date.slice(0, 7);
+  cal.tried = '';
+  renderCalendar();
+  $('calDialog').showModal();
+}
+
+function shiftMonth(delta) {
+  const [y, m] = cal.month.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  cal.month = d.getFullYear() + '-' + pad(d.getMonth() + 1);
+  renderCalendar();
+}
+
+function renderCalendar() {
+  const days = monthDays(cal.month);
+  const first = days[0], last = days[days.length - 1];
+  const today = todayISO();
+  const [y, m] = cal.month.split('-').map(Number);
+  $('calTitle').textContent = new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  $('calPrev').disabled = !!minDate() && first <= minDate();
+
+  // Tab filter chips.
+  const tabs = cache.config ? cache.config.tabs : [];
+  if (cal.tab && !tabs.some(t => t.name === cal.tab)) cal.tab = '';
+  $('calTabs').innerHTML = '';
+  [''].concat(tabs.map(t => t.name)).forEach(name => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = name || 'All';
+    b.className = cal.tab === name ? 'active' : '';
+    b.onclick = () => { cal.tab = name; store.set('calTab', name || null); renderCalendar(); };
+    $('calTabs').appendChild(b);
+  });
+  $('calTabs').classList.toggle('hidden', tabs.length < 2);
+
+  // Weekday headers, Monday first, in the browser's language.
+  const grid = $('calGrid');
+  grid.innerHTML = '';
+  for (let i = 0; i < 7; i++) {
+    const el = document.createElement('div');
+    el.className = 'wd';
+    el.textContent = new Date(2024, 0, 1 + i).toLocaleDateString(undefined, { weekday: 'short' }); // 2024-01-01 is a Monday
+    grid.appendChild(el);
+  }
+  const offset = (new Date(y, m - 1, 1).getDay() + 6) % 7;
+  for (let i = 0; i < offset; i++) grid.appendChild(document.createElement('div'));
+
+  const R = 15.5, C = 2 * Math.PI * R;
+  let missing = false, full = 0, tracked = 0;
+  days.forEach(date => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'cal-day';
+    const before = minDate() && date < minDate();
+    const future = date > today;
+    const known = dayKnown(date);
+    if (!known && !before && !future) missing = true;
+    const p = before || future || !known ? null : dayProgress(date);
+    if (p !== null) { tracked++; if (p >= 1) full++; }
+    if (p !== null && p >= 1) b.classList.add('full');
+    if (!known && !future && !before) b.classList.add('unknown');
+    if (date === today) b.classList.add('today');
+    if (date === state.date) b.classList.add('selected');
+    b.disabled = !!before;
+    if (future) b.classList.add('future');
+    const arc = p > 0 ? '<circle class="arc" cx="18" cy="18" r="' + R + '" fill="none" stroke-width="3" stroke-linecap="round" stroke-dasharray="' +
+      (p * C).toFixed(2) + ' ' + C.toFixed(2) + '"/>' : '';
+    b.innerHTML = '<svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="' + R + '" fill="none" stroke-width="3"/>' + arc + '</svg>' +
+      '<span>' + Number(date.slice(8)) + '</span>';
+    const unsent = Object.values(cache.days[date] || {}).some(r => r.dirty && (!cal.tab || r === cache.days[date][cal.tab]));
+    if (unsent) { const dot = document.createElement('i'); dot.className = 'unsent-dot'; dot.title = 'Not sent yet'; b.appendChild(dot); }
+    b.title = date.split('-').reverse().join('.') + (p !== null ? ' · ' + Math.round(p * 100) + '%' : '');
+    b.onclick = () => { $('calDialog').close(); setDate(date); };
+    grid.appendChild(b);
+  });
+
+  $('calSummary').textContent = tracked ? 'Completed: ' + full + ' of ' + tracked + ' days' : '';
+  // Load days of this month that aren't on the device yet (older months).
+  if (missing && !net.busy && state.token && cal.tried !== cal.month) {
+    cal.tried = cal.month; // once per month while the calendar is open (no retry loop when offline)
+    const from = minDate() && first < minDate() ? minDate() : first;
+    sync({ from, to: last < today ? last : today });
+  }
+}
+
+$('calendar').onclick = openCalendar;
+$('calPrev').onclick = () => shiftMonth(-1);
+$('calNext').onclick = () => shiftMonth(1);
 
 // ---------- PWA / install ----------
 if (API_URL && 'serviceWorker' in navigator) {
