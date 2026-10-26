@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tracker</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2f6fde">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #6b7385; --line: #e2e5eb;
+    --accent: #2f6fde; --accent-text: #ffffff; --ok: #1f9d55; --err: #d64545; --warn: #c98a00;
+    --done-bg: #eaf6ef;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --card: #1b2029; --text: #e6e9ef; --muted: #8d95a7; --line: #2b313d;
+      --accent: #5b8ff0; --accent-text: #0d1117; --ok: #3fbf74; --err: #ef6b6b; --warn: #e0a72e;
+      --done-bg: #17291f;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  .hidden { display: none !important; }
+
+  /* login */
+  #login { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+  #login form { width: 100%; max-width: 320px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 14px; padding: 24px; display: grid; gap: 12px; }
+  #login h1 { margin: 0 0 4px; font-size: 20px; }
+  .field { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+  .btn { padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  .error { color: var(--err); font-size: 14px; min-height: 1.2em; }
+
+  /* app */
+  header { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .bar { max-width: 900px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 8px; align-items: center; }
+  .bar .field { width: auto; flex: 1 1 auto; min-width: 0; text-align: center; }
+  .icon { width: 40px; height: 40px; padding: 0; display: grid; place-items: center; flex: none; }
+  .btn:disabled { opacity: .35; cursor: default; }
+  #status { font-size: 13px; color: var(--muted); white-space: nowrap; margin-left: auto; padding-left: 12px; }
+  #status.err { color: var(--err); cursor: pointer; }
+  #status.ok { color: var(--ok); }
+  nav { max-width: 900px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; }
+  #tabs { display: flex; gap: 4px; overflow-x: auto; min-width: 0; }
+  nav button { border: 0; background: none; padding: 10px 12px; border-bottom: 2px solid transparent; color: var(--muted); white-space: nowrap; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  nav .count { font-size: 12px; margin-left: 6px; color: var(--muted); font-weight: 400; }
+  main { max-width: 900px; margin: 0 auto; padding: 16px; }
+  .msg { color: var(--muted); padding: 24px 0; text-align: center; }
+  .msg.err { color: var(--err); }
+  footer { max-width: 900px; margin: 0 auto; padding: 8px 16px 32px; text-align: center; }
+  footer button, .link { background: none; border: 0; color: var(--muted); font-size: 14px; text-decoration: underline; padding: 6px; }
+  footer { display: flex; justify-content: center; gap: 16px; }
+  #login .link { justify-self: center; }
+  .installed .install { display: none !important; }
+
+  dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--text);
+    max-width: min(360px, calc(100vw - 32px)); padding: 20px; }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  dialog h2 { margin: 0 0 12px; font-size: 18px; }
+  dialog ol { margin: 0 0 16px; padding-left: 20px; display: grid; gap: 8px; }
+  dialog p { margin: 0 0 16px; color: var(--muted); }
+  dialog .btn { width: 100%; }
+  .glyph { display: inline-block; vertical-align: -3px; width: 18px; height: 18px; color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  th, td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+  thead th { font-size: 13px; color: var(--muted); font-weight: 600; }
+  tbody tr:last-child td, tbody tr:last-child th { border-bottom: 0; }
+  tbody th { font-weight: 500; }
+  tr.done { background: var(--done-bg); }
+  td.bool { width: 1%; text-align: center; cursor: pointer; }
+  td input[type=checkbox] { width: 24px; height: 24px; accent-color: var(--ok); cursor: pointer; }
+  td .field { padding: 7px 9px; min-width: 70px; }
+
+  /* phones: rows become cards */
+  @media (max-width: 560px) {
+    table, tbody, tr, th, td { display: block; }
+    table { background: none; border: 0; }
+    thead { display: none; }
+    tbody tr { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px;
+      padding: 4px 0; display: flex; flex-wrap: wrap; align-items: center; }
+    tbody tr.done { background: var(--done-bg); }
+    tbody th { flex: 1 1 auto; border: 0; padding: 10px 12px; }
+    td { border: 0; padding: 6px 12px; }
+    td.bool { width: auto; order: -1; flex: none; padding-right: 0; }
+    tr.has-inputs td:not(.bool) { flex: 1 1 100%; display: flex; align-items: center; gap: 10px; }
+    tr.has-inputs td:not(.bool)::before { content: attr(data-label); color: var(--muted); font-size: 13px; flex: 0 0 40%; }
+    td .field { flex: 1; }
+  }
+</style>
+</head>
+<body>
+
+<section id="login" class="hidden">
+  <form id="loginForm" autocomplete="on">
+    <h1>Tracker</h1>
+    <input type="text" name="username" value="tracker" autocomplete="username" class="hidden" aria-hidden="true">
+    <input id="password" class="field" type="password" placeholder="Password" autocomplete="current-password" required>
+    <button class="btn primary" type="submit">Sign in</button>
+    <div id="loginError" class="error"></div>
+    <button type="button" class="link install">Install app</button>
+  </form>
+</section>
+
+<dialog id="installDialog">
+  <h2>Install Tracker</h2>
+  <div id="installBody"></div>
+  <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+
+<section id="app" class="hidden">
+  <header>
+    <div class="bar">
+      <button class="btn icon" id="prev" aria-label="Previous day">‹</button>
+      <input id="date" class="field" type="date" required>
+      <button class="btn icon" id="next" aria-label="Next day">›</button>
+      <button class="btn" id="today">Today</button>
+    </div>
+    <nav><div id="tabs"></div><span id="status"></span></nav>
+  </header>
+  <main id="content"><div class="msg">Loading…</div></main>
+  <footer><button class="install">Install app</button><button id="logout">Sign out</button></footer>
+</section>
+
+<script>
+const API_URL = "https://script.google.com/macros/s/AKfycbzRz0gH48TZjfWbkaXBuReyH-5GTAystMgLwJGk4mlro5t06zjelHqYvc57VXr3QsTJ/exec"; // set by scripts/build-pwa.mjs for the standalone PWA
+
+// ---------- storage / transport ----------
+const store = {
+  get(k) { try { return localStorage.getItem('tracker.' + k); } catch (e) { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem('tracker.' + k) : localStorage.setItem('tracker.' + k, v); } catch (e) {} },
+};
+
+function call(fn, args) {
+  if (window.google && google.script && google.script.run) {
+    return new Promise((resolve, reject) =>
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).rpc(fn, args));
+  }
+  if (!API_URL) return Promise.reject(new Error('API_URL is not configured'));
+  return fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // simple request: no CORS preflight
+    body: JSON.stringify({ fn, args }),
+  }).then(r => r.json()).then(r => r.ok ? r.result : Promise.reject(new Error(r.error)));
+}
+
+const errText = e => String((e && e.message) || e).replace(/^(Exception|Error):\s*/, '');
+const isAuthError = e => errText(e).includes('AUTH_REQUIRED');
+
+// ---------- dates ----------
+const pad = n => String(n).padStart(2, '0');
+const iso = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+const todayISO = () => iso(new Date());
+function shiftISO(s, days) {
+  const [y, m, d] = s.split('-').map(Number);
+  return iso(new Date(y, m - 1, d + days));
+}
+
+// ---------- state ----------
+const $ = id => document.getElementById(id);
+const state = { token: store.get('token'), date: todayISO(), followToday: true, tabs: [], active: store.get('tab'), loadSeq: 0,
+  minDate: store.get('startDate') || '' }; // first allowed day; comes from the server
+const savers = {}; // tab name -> { timer, busy, again, error }
+
+// ---------- login ----------
+function showLogin(msg) {
+  state.token = null; store.set('token', null);
+  $('app').classList.add('hidden'); $('login').classList.remove('hidden');
+  $('loginError').textContent = msg || '';
+  $('password').focus();
+}
+
+$('loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('loginError').textContent = '';
+  try {
+    const { token, pwaUrl } = await call('login', { password: $('password').value });
+    state.token = token; store.set('token', token); store.set('pwaUrl', pwaUrl || null);
+    $('password').value = '';
+    showApp();
+  } catch (err) {
+    $('loginError').textContent = errText(err);
+  }
+});
+
+$('logout').addEventListener('click', async () => { await flushAll(); showLogin(); });
+
+// ---------- app ----------
+function showApp() {
+  $('login').classList.add('hidden'); $('app').classList.remove('hidden');
+  setDate(todayISO());
+}
+
+async function setDate(date) {
+  if (!date) return;
+  if (state.minDate && date < state.minDate) date = state.minDate;
+  await flushAll();
+  state.date = date;
+  state.followToday = date === todayISO();
+  $('date').value = date;
+  updateDateLimits();
+  load();
+}
+
+function updateDateLimits() {
+  $('date').min = state.minDate;
+  $('prev').disabled = !!state.minDate && state.date <= state.minDate;
+}
+
+async function load() {
+  const seq = ++state.loadSeq;
+  $('content').innerHTML = '<div class="msg">Loading…</div>';
+  try {
+    const res = await call('getDay', { token: state.token, date: state.date });
+    if (seq !== state.loadSeq) return;
+    if (res.startDate !== state.minDate) {
+      state.minDate = res.startDate; store.set('startDate', res.startDate);
+      if (state.date < state.minDate) return setDate(state.minDate);
+      updateDateLimits();
+    }
+    store.set('pwaUrl', res.pwaUrl || null);
+    state.tabs = res.tabs;
+    if (!state.tabs.some(t => t.name === state.active)) state.active = state.tabs[0] && state.tabs[0].name;
+    renderTabs(); renderTable(); updateStatus();
+  } catch (err) {
+    if (seq !== state.loadSeq) return;
+    if (isAuthError(err)) return showLogin('Please sign in again');
+    $('content').innerHTML = '';
+    const m = document.createElement('div');
+    m.className = 'msg err'; m.textContent = errText(err);
+    const retry = document.createElement('div');
+    retry.innerHTML = '<button class="btn" style="margin-top:12px">Retry</button>';
+    retry.firstChild.onclick = load;
+    m.appendChild(retry);
+    $('content').appendChild(m);
+  }
+}
+
+$('prev').onclick = () => setDate(shiftISO(state.date, -1));
+$('next').onclick = () => setDate(shiftISO(state.date, 1));
+$('today').onclick = () => setDate(todayISO());
+$('date').onchange = e => setDate(e.target.value);
+
+// Opened on another day (PWA left running overnight): jump to the new today.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.token && state.followToday && state.date !== todayISO()) {
+    setDate(todayISO());
+  }
+});
+
+// ---------- rendering (driven entirely by the config sheet) ----------
+function boolProgress(tab) {
+  const cols = tab.columns.map((c, j) => c.type === 'bool' ? j : -1).filter(j => j >= 0);
+  if (!cols.length) return '';
+  const done = tab.values.filter(row => cols.every(j => row[j] === true)).length;
+  return done + '/' + tab.rows.length;
+}
+
+function rowDone(tab, i) {
+  const cols = tab.columns.map((c, j) => c.type === 'bool' ? j : -1).filter(j => j >= 0);
+  return cols.length > 0 && cols.every(j => tab.values[i][j] === true);
+}
+
+function renderTabs() {
+  const nav = $('tabs');
+  nav.innerHTML = '';
+  state.tabs.forEach(tab => {
+    const b = document.createElement('button');
+    b.textContent = tab.name;
+    const p = boolProgress(tab);
+    if (p) { const s = document.createElement('span'); s.className = 'count'; s.textContent = p; b.appendChild(s); }
+    b.className = tab.name === state.active ? 'active' : '';
+    b.onclick = () => { state.active = tab.name; store.set('tab', tab.name); renderTabs(); renderTable(); };
+    nav.appendChild(b);
+  });
+}
+
+function makeInput(col, value, onChange) {
+  let el;
+  switch (col.type) {
+    case 'bool':
+      el = document.createElement('input');
+      el.type = 'checkbox'; el.checked = value === true;
+      el.onchange = () => onChange(el.checked, 0);
+      return el;
+    case 'select':
+      el = document.createElement('select');
+      el.className = 'field';
+      ['', ...col.options].forEach(o => { const opt = document.createElement('option'); opt.value = opt.textContent = o; el.appendChild(opt); });
+      if (value !== '' && !col.options.includes(String(value))) {
+        const opt = document.createElement('option'); opt.value = opt.textContent = value; el.appendChild(opt);
+      }
+      el.value = String(value);
+      el.onchange = () => onChange(el.value, 0);
+      return el;
+    default:
+      el = document.createElement('input');
+      el.className = 'field';
+      el.type = { time: 'time', date: 'date' }[col.type] || 'text';
+      if (col.type === 'number') el.inputMode = 'decimal';
+      el.value = value === null || value === undefined ? '' : String(value);
+      el.oninput = () => onChange(el.value, 1000);
+      el.onchange = () => onChange(el.value, 0);
+      return el;
+  }
+}
+
+function renderTable() {
+  const tab = state.tabs.find(t => t.name === state.active);
+  const content = $('content');
+  content.innerHTML = '';
+  if (!tab) { content.innerHTML = '<div class="msg">No tabs configured on the first sheet.</div>'; return; }
+
+  const table = document.createElement('table');
+  const thead = table.createTHead().insertRow();
+  [tab.labelHeader, ...tab.columns.map(c => c.name)].forEach(h => {
+    const th = document.createElement('th'); th.textContent = h; thead.appendChild(th);
+  });
+  const tbody = table.createTBody();
+  const hasInputs = tab.columns.some(c => c.type !== 'bool');
+
+  tab.rows.forEach((label, i) => {
+    const tr = tbody.insertRow();
+    tr.classList.toggle('has-inputs', hasInputs);
+    tr.classList.toggle('done', rowDone(tab, i));
+    const th = document.createElement('th'); th.textContent = label; tr.appendChild(th);
+    tab.columns.forEach((col, j) => {
+      const td = tr.insertCell();
+      td.dataset.label = col.name;
+      if (col.type === 'bool') td.className = 'bool';
+      const input = makeInput(col, tab.values[i][j], (v, delay) => {
+        tab.values[i][j] = v;
+        if (col.type === 'bool') { tr.classList.toggle('done', rowDone(tab, i)); renderTabs(); }
+        scheduleSave(tab.name, delay);
+      });
+      if (col.type === 'bool') td.onclick = e => { if (e.target !== input) input.click(); };
+      td.appendChild(input);
+    });
+  });
+  content.appendChild(table);
+}
+
+// ---------- saving ----------
+function scheduleSave(name, delay) {
+  const s = savers[name] || (savers[name] = {});
+  clearTimeout(s.timer);
+  s.timer = setTimeout(() => flush(name), delay);
+  updateStatus();
+}
+
+async function flush(name) {
+  const s = savers[name];
+  if (!s) return;
+  clearTimeout(s.timer); s.timer = null;
+  if (s.busy) { s.again = true; return s.busy; }
+  const tab = state.tabs.find(t => t.name === name);
+  if (!tab) return;
+  const payload = { token: state.token, date: state.date, tab: name, values: JSON.parse(JSON.stringify(tab.values)) };
+  s.busy = (async () => {
+    try {
+      await call('saveTab', payload);
+      s.error = null;
+    } catch (err) {
+      if (isAuthError(err)) { showLogin('Please sign in again'); return; }
+      s.error = errText(err);
+    }
+  })();
+  updateStatus();
+  await s.busy;
+  s.busy = null;
+  if (s.again) { s.again = false; await flush(name); }
+  updateStatus();
+}
+
+// Waits until nothing is queued or in flight (including re-saves chained after an in-flight one).
+async function flushAll() {
+  while (pending()) {
+    await Promise.all(Object.keys(savers).map(n => savers[n].timer ? flush(n) : savers[n].busy));
+  }
+}
+
+function pending() { return Object.values(savers).some(s => s.timer || s.busy); }
+
+function updateStatus() {
+  const el = $('status');
+  const errors = Object.values(savers).map(s => s.error).filter(Boolean);
+  el.className = ''; el.title = ''; el.onclick = null;
+  if (pending()) { el.textContent = 'Saving…'; return; }
+  if (errors.length) {
+    el.className = 'err'; el.textContent = 'Not saved ⟳'; el.title = errors[0];
+    el.onclick = () => Object.keys(savers).filter(n => savers[n].error).forEach(flush);
+    return;
+  }
+  el.className = Object.keys(savers).length ? 'ok' : ''; el.textContent = Object.keys(savers).length ? 'Saved' : '';
+}
+
+window.addEventListener('beforeunload', e => { if (pending()) { e.preventDefault(); e.returnValue = ''; } });
+
+// ---------- PWA / install ----------
+if (API_URL && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+const inAppsScript = !!(window.google && google.script && google.script.run);
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+let installPrompt = null;
+
+if (isStandalone()) document.body.classList.add('installed');
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installPrompt = e; });
+window.addEventListener('appinstalled', () => { installPrompt = null; document.body.classList.add('installed'); });
+
+const SHARE_ICON = '<svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-label="Share"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
+const PLUS_ICON = '<svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-label="Add"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></svg>';
+
+function showInstallHelp(html) {
+  $('installBody').innerHTML = html;
+  $('installDialog').showModal();
+}
+
+async function install() {
+  // Google's page can't be installed (no manifest/service worker there): send to the PWA copy.
+  // Without a PWA copy (script property PWA_URL), a home screen shortcut to this page is the way.
+  if (inAppsScript) {
+    const url = store.get('pwaUrl');
+    if (url) { window.open(url, '_blank'); return; }
+    if (!isIOS) {
+      return showInstallHelp('<p><b>Android (Chrome):</b></p><ol>' +
+        '<li>Tap the menu <b>⋮</b> (top right).</li>' +
+        '<li>Tap <b>Add to Home screen</b>, then <b>Add</b>.</li></ol>' +
+        '<p><b>Computer (Chrome / Edge):</b></p><ol>' +
+        '<li>Open the menu <b>⋮</b> / <b>⋯</b>.</li>' +
+        '<li>Chrome: <b>Cast, save and share → Create shortcut</b> (tick "Open as window"). ' +
+        'Edge: <b>Apps → Install this site as an app</b>.</li></ol>');
+    }
+  }
+  if (installPrompt) {
+    installPrompt.prompt();
+    const { outcome } = await installPrompt.userChoice;
+    if (outcome === 'accepted') installPrompt = null;
+    return;
+  }
+  if (isIOS) {
+    return showInstallHelp('<ol>' +
+      '<li>Open this page in <b>Safari</b>.</li>' +
+      '<li>Tap <b>Share</b> ' + SHARE_ICON + ' (bottom bar on iPhone, top on iPad; in Chrome it\'s in the address bar).</li>' +
+      '<li>Scroll down and tap <b>Add to Home Screen</b> ' + PLUS_ICON + '.</li>' +
+      '<li>Tap <b>Add</b>. Tracker appears on your home screen.</li></ol>');
+  }
+  if (!window.isSecureContext) {
+    return showInstallHelp('<p>Browsers only install apps opened over <b>https://</b>. Open the app from its https address to install it.</p>');
+  }
+  showInstallHelp('<ol>' +
+    '<li>Open the browser menu (⋮ or ⋯).</li>' +
+    '<li>Choose <b>Install app</b>, <b>Add to Home screen</b> or <b>Apps → Install this site as an app</b>.</li></ol>' +
+    '<p>If the option isn\'t there yet, reload the page once and try again.</p>');
+}
+
+document.querySelectorAll('.install').forEach(b => b.addEventListener('click', install));
+
+// ---------- start ----------
+state.token ? showApp() : showLogin();
+</script>
+</body>
+</html>
