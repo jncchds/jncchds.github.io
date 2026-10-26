@@ -1,5 +1,5 @@
-// App shell cache. API calls go to script.google.com (cross-origin) and are never cached.
-const CACHE = 'tracker-20261026115818';
+// App shell cache (the data cache lives in localStorage, see Index.html). API calls go to script.google.com (cross-origin) and are never cached.
+const CACHE = 'tracker-20261026121309';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -12,13 +12,17 @@ self.addEventListener('activate', e => {
     .then(() => self.clients.claim()));
 });
 
-// Network first (so updates show up), cache as offline fallback.
+// Cache first, refresh in the background: the app opens instantly even on a bad connection,
+// and a new version shows up on the next launch.
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  e.respondWith(
-    fetch(e.request)
-      .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res; })
-      .catch(() => caches.match(e.request).then(r => r || caches.match('./index.html')))
-  );
+  e.respondWith(caches.open(CACHE).then(async cache => {
+    const cached = await cache.match(e.request, { ignoreSearch: true });
+    const refresh = fetch(e.request)
+      .then(res => { if (res.ok) cache.put(e.request, res.clone()); return res; })
+      .catch(() => null);
+    if (cached) { e.waitUntil(refresh); return cached; }
+    return (await refresh) || (await cache.match('./index.html')) || Response.error();
+  }));
 });

@@ -52,6 +52,10 @@
   #status { font-size: 13px; color: var(--muted); white-space: nowrap; margin-left: auto; padding-left: 12px; }
   #status.err { color: var(--err); cursor: pointer; }
   #status.ok { color: var(--ok); }
+  #status.warn { color: var(--warn); }
+  #status { cursor: pointer; }
+  .unsent-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-left: 6px; vertical-align: 2px; }
+  ul.unsent { margin: 0 0 16px; padding-left: 20px; display: grid; gap: 6px; }
   nav { max-width: 900px; margin: 0 auto; padding: 0 16px; display: flex; align-items: center; }
   #tabs { display: flex; gap: 4px; overflow-x: auto; min-width: 0; }
   nav button { border: 0; background: none; padding: 10px 12px; border-bottom: 2px solid transparent; color: var(--muted); white-space: nowrap; }
@@ -121,6 +125,12 @@
   <form method="dialog"><button class="btn">Close</button></form>
 </dialog>
 
+<dialog id="syncDialog">
+  <h2>Sync</h2>
+  <div id="syncBody"></div>
+  <form method="dialog"><button class="btn">Close</button></form>
+</dialog>
+
 <section id="app" class="hidden">
   <header>
     <div class="bar">
@@ -157,7 +167,10 @@ function call(fn, args) {
   }).then(r => r.json()).then(r => r.ok ? r.result : Promise.reject(new Error(r.error)));
 }
 
-const errText = e => String((e && e.message) || e).replace(/^(Exception|Error):\s*/, '');
+const errText = e => {
+  const s = String((e && e.message) || e).replace(/^(Exception|Error):\s*/, '');
+  return /Failed to fetch|NetworkError|Load failed|network/i.test(s) ? 'No connection' : s;
+};
 const isAuthError = e => errText(e).includes('AUTH_REQUIRED');
 
 // ---------- dates ----------
@@ -171,9 +184,60 @@ function shiftISO(s, days) {
 
 // ---------- state ----------
 const $ = id => document.getElementById(id);
-const state = { token: store.get('token'), date: todayISO(), followToday: true, tabs: [], active: store.get('tab'), loadSeq: 0,
-  minDate: store.get('startDate') || '' }; // first allowed day; comes from the server
-const savers = {}; // tab name -> { timer, busy, again, error }
+const state = { token: store.get('token'), date: todayISO(), followToday: true, tabs: [], active: store.get('tab') };
+
+// ---------- local cache (works offline) ----------
+// config: { startDate, pwaUrl, tabs: [{ name, labelHeader, columns, rows }] }  last config from the server
+// days:   { date: { tab: { v: values, dirty?: rev, err?: text } } }           dirty = not sent yet
+// synced: { from, to }   range covered by the last successful sync (missing days there are empty)
+// known:  { date: true } single days fetched outside that range
+const KEEP_DAYS = 31;
+const readJSON = k => { try { return JSON.parse(store.get(k) || 'null'); } catch (e) { return null; } };
+const cache = { config: readJSON('config'), days: readJSON('days') || {}, synced: readJSON('synced'), known: readJSON('known') || {} };
+function saveCache() {
+  store.set('config', JSON.stringify(cache.config));
+  store.set('days', JSON.stringify(cache.days));
+  store.set('synced', JSON.stringify(cache.synced));
+  store.set('known', JSON.stringify(cache.known));
+}
+let revSeq = Date.now();
+const nextRev = () => ++revSeq;
+const minDate = () => (cache.config && cache.config.startDate) || '';
+const emptyCell = col => col.type === 'bool' ? false : '';
+
+/** Cached values for a day, fitted to the current config (new rows/columns are empty). */
+function valuesFor(date, tab) {
+  const rec = (cache.days[date] || {})[tab.name];
+  return tab.rows.map((_, i) => tab.columns.map((col, j) => {
+    const v = rec && rec.v[i] ? rec.v[i][j] : undefined;
+    return v === undefined || v === null ? emptyCell(col) : v;
+  }));
+}
+
+function dayKnown(date) {
+  const s = cache.synced;
+  return !!(cache.days[date] || cache.known[date] || (s && date >= s.from && date <= s.to));
+}
+
+function dirtyList() {
+  const out = [];
+  Object.keys(cache.days).sort().forEach(date => Object.keys(cache.days[date]).forEach(tab => {
+    const rec = cache.days[date][tab];
+    if (rec.dirty) out.push({ date, tab, rec });
+  }));
+  return out;
+}
+
+/** Drops clean days older than the cache window. Unsent days are always kept. */
+function prune() {
+  const oldest = shiftISO(todayISO(), -KEEP_DAYS);
+  Object.keys(cache.days).forEach(date => {
+    if (date >= oldest) return;
+    Object.keys(cache.days[date]).forEach(tab => { if (!cache.days[date][tab].dirty) delete cache.days[date][tab]; });
+    if (!Object.keys(cache.days[date]).length) delete cache.days[date];
+  });
+  Object.keys(cache.known).forEach(date => { if (date < oldest) delete cache.known[date]; });
+}
 
 // ---------- login ----------
 function showLogin(msg) {
@@ -187,8 +251,8 @@ $('loginForm').addEventListener('submit', async e => {
   e.preventDefault();
   $('loginError').textContent = '';
   try {
-    const { token, pwaUrl } = await call('login', { password: $('password').value });
-    state.token = token; store.set('token', token); store.set('pwaUrl', pwaUrl || null);
+    const { token } = await call('login', { password: $('password').value });
+    state.token = token; store.set('token', token);
     $('password').value = '';
     showApp();
   } catch (err) {
@@ -196,57 +260,57 @@ $('loginForm').addEventListener('submit', async e => {
   }
 });
 
-$('logout').addEventListener('click', async () => { await flushAll(); showLogin(); });
+$('logout').addEventListener('click', () => {
+  const n = dirtyList().length;
+  if (n && !confirm(n + ' change(s) are not sent yet. They stay on this device and are sent after you sign in again. Sign out?')) return;
+  showLogin();
+});
 
 // ---------- app ----------
 function showApp() {
   $('login').classList.add('hidden'); $('app').classList.remove('hidden');
-  setDate(todayISO());
+  setDate(todayISO(), true);
+  sync();
 }
 
-async function setDate(date) {
+function setDate(date, noFetch) {
   if (!date) return;
-  if (state.minDate && date < state.minDate) date = state.minDate;
-  await flushAll();
+  if (minDate() && date < minDate()) date = minDate();
   state.date = date;
   state.followToday = date === todayISO();
   $('date').value = date;
   updateDateLimits();
-  load();
+  render();
+  if (!noFetch && !dayKnown(date)) sync({ from: date, to: date });
 }
 
 function updateDateLimits() {
-  $('date').min = state.minDate;
-  $('prev').disabled = !!state.minDate && state.date <= state.minDate;
+  $('date').min = minDate();
+  $('prev').disabled = !!minDate() && state.date <= minDate();
 }
 
-async function load() {
-  const seq = ++state.loadSeq;
-  $('content').innerHTML = '<div class="msg">Loading…</div>';
-  try {
-    const res = await call('getDay', { token: state.token, date: state.date });
-    if (seq !== state.loadSeq) return;
-    if (res.startDate !== state.minDate) {
-      state.minDate = res.startDate; store.set('startDate', res.startDate);
-      if (state.date < state.minDate) return setDate(state.minDate);
-      updateDateLimits();
-    }
-    store.set('pwaUrl', res.pwaUrl || null);
-    state.tabs = res.tabs;
-    if (!state.tabs.some(t => t.name === state.active)) state.active = state.tabs[0] && state.tabs[0].name;
-    renderTabs(); renderTable(); updateStatus();
-  } catch (err) {
-    if (seq !== state.loadSeq) return;
-    if (isAuthError(err)) return showLogin('Please sign in again');
-    $('content').innerHTML = '';
+/** Builds the view for the selected day from the cache. */
+function render() {
+  const content = $('content');
+  if (!cache.config) {
+    content.innerHTML = '';
     const m = document.createElement('div');
-    m.className = 'msg err'; m.textContent = errText(err);
-    const retry = document.createElement('div');
-    retry.innerHTML = '<button class="btn" style="margin-top:12px">Retry</button>';
-    retry.firstChild.onclick = load;
-    m.appendChild(retry);
-    $('content').appendChild(m);
+    m.className = 'msg' + (net.error ? ' err' : '');
+    m.textContent = net.error ? 'Can\'t load the app data: ' + net.error : 'Loading…';
+    if (net.error) {
+      const retry = document.createElement('div');
+      retry.innerHTML = '<button class="btn" style="margin-top:12px">Retry</button>';
+      retry.firstChild.onclick = () => sync();
+      m.appendChild(retry);
+    }
+    content.appendChild(m);
+    $('tabs').innerHTML = '';
+    updateStatus();
+    return;
   }
+  state.tabs = cache.config.tabs.map(t => Object.assign({}, t, { values: valuesFor(state.date, t) }));
+  if (!state.tabs.some(t => t.name === state.active)) state.active = state.tabs[0] && state.tabs[0].name;
+  renderTabs(); renderTable(); updateStatus();
 }
 
 $('prev').onclick = () => setDate(shiftISO(state.date, -1));
@@ -254,12 +318,14 @@ $('next').onclick = () => setDate(shiftISO(state.date, 1));
 $('today').onclick = () => setDate(todayISO());
 $('date').onchange = e => setDate(e.target.value);
 
-// Opened on another day (PWA left running overnight): jump to the new today.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && state.token && state.followToday && state.date !== todayISO()) {
-    setDate(todayISO());
-  }
+  if (document.visibilityState !== 'visible' || !state.token) return;
+  // Opened on another day (app left running overnight): jump to the new today.
+  if (state.followToday && state.date !== todayISO()) setDate(todayISO());
+  sync();
 });
+window.addEventListener('online', () => state.token && sync());
+setInterval(() => { if (state.token && dirtyList().length) sync(); }, 30000);
 
 // ---------- rendering (driven entirely by the config sheet) ----------
 function boolProgress(tab) {
@@ -282,6 +348,8 @@ function renderTabs() {
     b.textContent = tab.name;
     const p = boolProgress(tab);
     if (p) { const s = document.createElement('span'); s.className = 'count'; s.textContent = p; b.appendChild(s); }
+    const rec = (cache.days[state.date] || {})[tab.name];
+    if (rec && rec.dirty) { const s = document.createElement('span'); s.className = 'unsent-dot'; s.title = 'Not sent yet'; b.appendChild(s); }
     b.className = tab.name === state.active ? 'active' : '';
     b.onclick = () => { state.active = tab.name; store.set('tab', tab.name); renderTabs(); renderTable(); };
     nav.appendChild(b);
@@ -294,7 +362,7 @@ function makeInput(col, value, onChange) {
     case 'bool':
       el = document.createElement('input');
       el.type = 'checkbox'; el.checked = value === true;
-      el.onchange = () => onChange(el.checked, 0);
+      el.onchange = () => onChange(el.checked, 300);
       return el;
     case 'select':
       el = document.createElement('select');
@@ -304,7 +372,7 @@ function makeInput(col, value, onChange) {
         const opt = document.createElement('option'); opt.value = opt.textContent = value; el.appendChild(opt);
       }
       el.value = String(value);
-      el.onchange = () => onChange(el.value, 0);
+      el.onchange = () => onChange(el.value, 300);
       return el;
     default:
       el = document.createElement('input');
@@ -312,8 +380,8 @@ function makeInput(col, value, onChange) {
       el.type = { time: 'time', date: 'date' }[col.type] || 'text';
       if (col.type === 'number') el.inputMode = 'decimal';
       el.value = value === null || value === undefined ? '' : String(value);
-      el.oninput = () => onChange(el.value, 1000);
-      el.onchange = () => onChange(el.value, 0);
+      el.oninput = () => onChange(el.value, 1500);
+      el.onchange = () => onChange(el.value, 300);
       return el;
   }
 }
@@ -323,6 +391,11 @@ function renderTable() {
   const content = $('content');
   content.innerHTML = '';
   if (!tab) { content.innerHTML = '<div class="msg">No tabs configured on the first sheet.</div>'; return; }
+  if (!dayKnown(state.date)) {
+    content.innerHTML = '<div class="msg">' + (net.busy || !net.error ? 'Loading…' :
+      'This day isn\'t stored on this device. Connect to the internet to load it.') + '</div>';
+    return;
+  }
 
   const table = document.createElement('table');
   const thead = table.createTHead().insertRow();
@@ -344,7 +417,7 @@ function renderTable() {
       const input = makeInput(col, tab.values[i][j], (v, delay) => {
         tab.values[i][j] = v;
         if (col.type === 'bool') { tr.classList.toggle('done', rowDone(tab, i)); renderTabs(); }
-        scheduleSave(tab.name, delay);
+        edited(tab, delay);
       });
       if (col.type === 'bool') td.onclick = e => { if (e.target !== input) input.click(); };
       td.appendChild(input);
@@ -353,61 +426,133 @@ function renderTable() {
   content.appendChild(table);
 }
 
-// ---------- saving ----------
-function scheduleSave(name, delay) {
-  const s = savers[name] || (savers[name] = {});
-  clearTimeout(s.timer);
-  s.timer = setTimeout(() => flush(name), delay);
-  updateStatus();
+// ---------- editing + sync ----------
+/** Called on every edit: stores it locally (marked unsent) and schedules a sync. */
+function edited(tab, delay) {
+  const day = cache.days[state.date] || (cache.days[state.date] = {});
+  day[tab.name] = { v: tab.values, dirty: nextRev() };
+  saveCache();
+  renderTabs(); updateStatus();
+  scheduleSync(delay);
 }
 
-async function flush(name) {
-  const s = savers[name];
-  if (!s) return;
-  clearTimeout(s.timer); s.timer = null;
-  if (s.busy) { s.again = true; return s.busy; }
-  const tab = state.tabs.find(t => t.name === name);
-  if (!tab) return;
-  const payload = { token: state.token, date: state.date, tab: name, values: JSON.parse(JSON.stringify(tab.values)) };
-  s.busy = (async () => {
+let syncTimer = null;
+function scheduleSync(delay) {
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => sync(), delay);
+}
+
+const net = { busy: null, again: false, ok: null, error: '' };
+
+/**
+ * Sends every unsent edit and refreshes config + days in one call.
+ * Default range: the last month. Unsent local edits always win over server data.
+ */
+async function sync(range) {
+  if (!state.token) return;
+  if (net.busy) { net.again = true; return net.busy; }
+  clearTimeout(syncTimer);
+  const today = todayISO();
+  const from = range ? range.from : shiftISO(today, -KEEP_DAYS);
+  const to = range ? range.to : shiftISO(today, 1);
+  const pending = dirtyList().map(d => ({ id: d.date + '|' + d.tab, date: d.date, tab: d.tab, values: d.rec.v, rev: d.rec.dirty }));
+
+  net.busy = (async () => {
     try {
-      await call('saveTab', payload);
-      s.error = null;
+      const res = await call('sync', {
+        token: state.token, from, to,
+        changes: pending.map(p => ({ id: p.id, date: p.date, tab: p.tab, values: p.values })),
+      });
+      const viewBefore = JSON.stringify([cache.config, state.tabs.map(t => valuesFor(state.date, t))]);
+
+      // Results of the sent edits. Edits made while the request was running keep their newer rev.
+      res.results.forEach(r => {
+        const p = pending.find(x => x.id === r.id);
+        const rec = p && (cache.days[p.date] || {})[p.tab];
+        if (!rec) return;
+        if (r.ok) { if (rec.dirty === p.rev) { delete rec.dirty; delete rec.err; } }
+        else rec.err = r.error;
+      });
+
+      cache.config = { startDate: res.startDate, pwaUrl: res.pwaUrl, tabs: res.tabs };
+      store.set('pwaUrl', res.pwaUrl || null);
+
+      // Server data replaces clean cached days in the synced range.
+      for (let d = res.from; d <= res.to; d = shiftISO(d, 1)) {
+        const server = res.days[d] || {};
+        const day = cache.days[d] || {};
+        new Set([...Object.keys(day), ...Object.keys(server)]).forEach(tab => {
+          if (day[tab] && day[tab].dirty) return;
+          if (server[tab]) day[tab] = { v: server[tab] }; else delete day[tab];
+        });
+        if (Object.keys(day).length) cache.days[d] = day; else delete cache.days[d];
+      }
+      if (range) cache.known[res.from] = true;
+      else cache.synced = { from: res.from, to: res.to };
+      prune();
+      saveCache();
+      net.ok = Date.now(); net.error = '';
+
+      if (minDate() && state.date < minDate()) return setDate(minDate());
+      updateDateLimits();
+      // Re-render only when something visible changed, so typing isn't interrupted.
+      const viewAfter = JSON.stringify([cache.config, cache.config.tabs.map(t => valuesFor(state.date, t))]);
+      if (viewAfter !== viewBefore || !state.tabs.length) render(); else renderTabs();
     } catch (err) {
       if (isAuthError(err)) { showLogin('Please sign in again'); return; }
-      s.error = errText(err);
+      net.error = errText(err);
+      if (!cache.config || !dayKnown(state.date)) render();
     }
   })();
   updateStatus();
-  await s.busy;
-  s.busy = null;
-  if (s.again) { s.again = false; await flush(name); }
+  await net.busy;
+  net.busy = null;
   updateStatus();
+  if (net.again) { net.again = false; sync(); }
+  // A day outside the month window (e.g. picked while another sync was running).
+  else if (!range && cache.config && !net.error && !dayKnown(state.date)) sync({ from: state.date, to: state.date });
 }
-
-// Waits until nothing is queued or in flight (including re-saves chained after an in-flight one).
-async function flushAll() {
-  while (pending()) {
-    await Promise.all(Object.keys(savers).map(n => savers[n].timer ? flush(n) : savers[n].busy));
-  }
-}
-
-function pending() { return Object.values(savers).some(s => s.timer || s.busy); }
 
 function updateStatus() {
   const el = $('status');
-  const errors = Object.values(savers).map(s => s.error).filter(Boolean);
-  el.className = ''; el.title = ''; el.onclick = null;
-  if (pending()) { el.textContent = 'Saving…'; return; }
-  if (errors.length) {
-    el.className = 'err'; el.textContent = 'Not saved ⟳'; el.title = errors[0];
-    el.onclick = () => Object.keys(savers).filter(n => savers[n].error).forEach(flush);
+  const unsent = dirtyList();
+  const rejected = unsent.filter(d => d.rec.err);
+  el.className = ''; el.title = ''; el.onclick = showSyncDialog;
+  if (net.busy) { el.textContent = 'Syncing…'; return; }
+  if (rejected.length) { el.className = 'err'; el.textContent = rejected.length + ' rejected'; el.title = rejected[0].rec.err; return; }
+  if (unsent.length) {
+    const days = new Set(unsent.map(d => d.date)).size;
+    el.className = 'warn';
+    el.textContent = (net.error ? 'Offline · ' : '') + days + ' unsent';
+    el.title = days + (days === 1 ? ' day' : ' days') + ' not sent yet. Tap for details.';
     return;
   }
-  el.className = Object.keys(savers).length ? 'ok' : ''; el.textContent = Object.keys(savers).length ? 'Saved' : '';
+  if (net.error) { el.className = 'warn'; el.textContent = 'Offline'; el.title = net.error; return; }
+  el.className = net.ok ? 'ok' : ''; el.textContent = net.ok ? 'Synced' : '';
 }
 
-window.addEventListener('beforeunload', e => { if (pending()) { e.preventDefault(); e.returnValue = ''; } });
+function showSyncDialog() {
+  const unsent = dirtyList();
+  const fmt = d => d.split('-').reverse().join('.');
+  let html = '';
+  if (unsent.length) {
+    html += '<p>Saved on this device, not sent to the spreadsheet yet:</p><ul class="unsent">' +
+      unsent.map(d => '<li><b>' + fmt(d.date) + '</b> · ' + escapeHtml(d.tab) +
+        (d.rec.err ? '<br><span class="error">' + escapeHtml(d.rec.err) + '</span>' : '') + '</li>').join('') + '</ul>';
+  } else {
+    html += '<p>Everything is sent.</p>';
+  }
+  if (net.error) html += '<p>Last sync failed: ' + escapeHtml(net.error) + '</p>';
+  else if (net.ok) html += '<p>Last sync: ' + new Date(net.ok).toLocaleTimeString() + '</p>';
+  html += '<button class="btn primary" id="syncNow" style="width:100%;margin-bottom:8px">Sync now</button>';
+  $('syncBody').innerHTML = html;
+  $('syncNow').onclick = () => { $('syncDialog').close(); sync(); };
+  $('syncDialog').showModal();
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 
 // ---------- PWA / install ----------
 if (API_URL && 'serviceWorker' in navigator) {
