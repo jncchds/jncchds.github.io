@@ -1,5 +1,5 @@
 // App shell cache (the data cache lives in localStorage, see Index.html). API calls go to script.google.com (cross-origin) and are never cached.
-const CACHE = 'tracker-20261026122959';
+const CACHE = 'tracker-20261026125130';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

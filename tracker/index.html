@@ -367,16 +367,25 @@ window.addEventListener('online', () => state.token && sync());
 setInterval(() => { if (state.token && dirtyList().length) sync(); }, 30000);
 
 // ---------- rendering (driven entirely by the config sheet) ----------
+// Hidden rows/columns (set on the config sheet) stay in the data but aren't shown or counted.
+const shownRows = tab => tab.rows.map((_, i) => i).filter(i => !(tab.hiddenRows && tab.hiddenRows[i]));
+const shownCols = tab => tab.columns.map((_, j) => j).filter(j => !tab.columns[j].hidden);
+const boolCols = tab => shownCols(tab).filter(j => tab.columns[j].type === 'bool');
+
+/** Whether a row counts as done: all its checkboxes ticked; rows without checkboxes: anything filled in. */
+function rowComplete(tab, row) {
+  const bools = boolCols(tab);
+  return bools.length ? bools.every(j => row[j] === true) : shownCols(tab).some(j => row[j] !== '' && row[j] !== false);
+}
+
 function boolProgress(tab) {
-  const cols = tab.columns.map((c, j) => c.type === 'bool' ? j : -1).filter(j => j >= 0);
-  if (!cols.length) return '';
-  const done = tab.values.filter(row => cols.every(j => row[j] === true)).length;
-  return done + '/' + tab.rows.length;
+  if (!boolCols(tab).length) return '';
+  const rows = shownRows(tab);
+  return rows.filter(i => rowComplete(tab, tab.values[i])).length + '/' + rows.length;
 }
 
 function rowDone(tab, i) {
-  const cols = tab.columns.map((c, j) => c.type === 'bool' ? j : -1).filter(j => j >= 0);
-  return cols.length > 0 && cols.every(j => tab.values[i][j] === true);
+  return boolCols(tab).length > 0 && rowComplete(tab, tab.values[i]);
 }
 
 function renderTabs() {
@@ -436,20 +445,25 @@ function renderTable() {
     return;
   }
 
+  if (!shownRows(tab).length) { content.innerHTML = '<div class="msg">All rows of this tab are hidden on the config sheet.</div>'; return; }
+
   const table = document.createElement('table');
   const thead = table.createTHead().insertRow();
-  [tab.labelHeader, ...tab.columns.map(c => c.name)].forEach(h => {
+  const cols = shownCols(tab);
+  [tab.labelHeader, ...cols.map(j => tab.columns[j].name)].forEach(h => {
     const th = document.createElement('th'); th.textContent = h; thead.appendChild(th);
   });
   const tbody = table.createTBody();
-  const hasInputs = tab.columns.some(c => c.type !== 'bool');
+  const hasInputs = cols.some(j => tab.columns[j].type !== 'bool');
 
-  tab.rows.forEach((label, i) => {
+  shownRows(tab).forEach(i => {
+    const label = tab.rows[i];
     const tr = tbody.insertRow();
     tr.classList.toggle('has-inputs', hasInputs);
     tr.classList.toggle('done', rowDone(tab, i));
     const th = document.createElement('th'); th.textContent = label; tr.appendChild(th);
-    tab.columns.forEach((col, j) => {
+    cols.forEach(j => {
+      const col = tab.columns[j];
       const td = tr.insertCell();
       td.dataset.label = col.name;
       if (col.type === 'bool') td.className = 'bool';
@@ -605,10 +619,9 @@ function dayProgress(date) {
   let done = 0, total = 0;
   cache.config.tabs.filter(t => !cal.tab || t.name === cal.tab).forEach(tab => {
     const values = valuesFor(date, tab);
-    const bools = tab.columns.map((c, j) => c.type === 'bool' ? j : -1).filter(j => j >= 0);
-    values.forEach(row => {
+    shownRows(tab).forEach(i => {
       total++;
-      if (bools.length ? bools.every(j => row[j] === true) : row.some(v => v !== '' && v !== false)) done++;
+      if (rowComplete(tab, values[i])) done++;
     });
   });
   return total ? done / total : null;
